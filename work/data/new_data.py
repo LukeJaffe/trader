@@ -132,12 +132,12 @@ class DataFilter(object):
             (datetime) end_date: date of last day in predict average
         """
         # Get historical data
-        data = np.zeros((history_period, len(fields)))
+        data = np.zeros((len(fields), history_period))
         for i in range(1, history_period):
             dt = start_date+datetime.timedelta(i)
             if dt in self.data_dict[ticker]:
                 for j,f in enumerate(fields):
-                    data[i][j] = self.data_dict[ticker][dt][f]
+                    data[j][i] = self.data_dict[ticker][dt][f]
 
         # Get k-day averages for prediction
         history_avg = self.k_day_avg(ticker, 
@@ -200,7 +200,6 @@ with progressbar.ProgressBar(max_value=len(tickers)) as bar:
 data_arr = np.array(data_list)
 label_arr = np.array(label_list)
 print(data_arr.shape, label_arr.shape)
-sys.exit()
 
 # Create out dir if it doesn't exist
 if not os.path.exists(out_dir):

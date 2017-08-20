@@ -21,18 +21,38 @@ import datetime
 import numpy as np
 import progressbar
 import argparse
+import enum
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--input_path', type=str, default='wiki.csv')
+parser.add_argument('--input_path', type=str, default='wiki_10.csv')
 parser.add_argument('--history_period', type=int, default=100)
 parser.add_argument('--predict_period', type=int, default=50)
 parser.add_argument('--avg_period', type=int, default=7)
 args = parser.parse_args()
-prefix_str = os.path.splitext(args.input_path)[0]
-data_file = os.path.join('{}_data_{}_{}_{}.npy'.format(prefix_str,
+
+out_dir = os.path.splitext(args.input_path)[0]
+data_file = os.path.join('data_{}_{}_{}.npy'.format(
     args.history_period, args.predict_period, args.avg_period))
-label_file = os.path.join('{}_labels_{}_{}_{}.npy'.format(prefix_str,
+data_path = os.path.join(out_dir, data_file)
+label_file = os.path.join('labels_{}_{}_{}.npy'.format(
     args.history_period, args.predict_period, args.avg_period))
+label_path = os.path.join(out_dir, label_file)
+
+class WikiHeader(enum.Enum):
+    TICKER = 0
+    DATE = 1
+    OPEN = 2
+    HIGH = 3
+    LOW = 4
+    CLOSE = 5
+    VOLUME = 6
+    EX_DIVIDEND = 7
+    SPLIT_RATIO = 8
+    ADJ_OPEN = 9
+    ADJ_HIGH = 10
+    ADJ_LOW = 11
+    ADJ_CLOSE = 12
+    ADJ_VOLUME = 13
 
 class DataFilter(object):
 
@@ -121,25 +141,19 @@ class DataFilter(object):
 
         return history[:history_period], label, end_date
 
-TICKER = 0
-DATE = 1
-OPEN = 2
-HIGH = 3
-LOW = 4
-CLOSE = 5
 
 data_dict = collections.defaultdict(list)
 with open(args.input_path, 'r') as csvfile:
     datareader = csv.reader(csvfile)
     headers = next(datareader)
     for row in datareader:
-        dt = datetime.datetime.strptime(row[DATE], '%Y-%m-%d')
+        dt = datetime.datetime.strptime(row[WikiHeader.DATE.value], '%Y-%m-%d')
         try:
-            close = float(row[CLOSE])
+            close = float(row[WikiHeader.CLOSE.value])
         except:
             pass
         else:
-            data_dict[row[TICKER]].append((dt, close))
+            data_dict[row[WikiHeader.TICKER.value]].append((dt, close))
 
 tickers = data_dict.keys()
 data_filter = DataFilter(data_dict)
@@ -168,6 +182,10 @@ data_arr = np.array(data_list)
 label_arr = np.array(label_list)
 print(data_arr.shape, label_arr.shape)
 
+# Create out dir if it doesn't exist
+if not os.path.exists(out_dir):
+    os.makedirs(out_dir)
+
 # Save off data
-np.save(data_file, data_arr)
-np.save(label_file, label_arr)
+np.save(data_path, data_arr)
+np.save(label_path, label_arr)
