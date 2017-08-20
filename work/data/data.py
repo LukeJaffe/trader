@@ -21,7 +21,8 @@ import datetime
 import numpy as np
 import progressbar
 import argparse
-import enum
+
+from pprint import pprint
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--input_path', type=str, default='wiki_10.csv')
@@ -38,32 +39,86 @@ label_file = os.path.join('labels_{}_{}_{}.npy'.format(
     args.history_period, args.predict_period, args.avg_period))
 label_path = os.path.join(out_dir, label_file)
 
-class WikiHeader(enum.Enum):
-    TICKER = 0
-    DATE = 1
-    OPEN = 2
-    HIGH = 3
-    LOW = 4
-    CLOSE = 5
-    VOLUME = 6
-    EX_DIVIDEND = 7
-    SPLIT_RATIO = 8
-    ADJ_OPEN = 9
-    ADJ_HIGH = 10
-    ADJ_LOW = 11
-    ADJ_CLOSE = 12
-    ADJ_VOLUME = 13
+class WikiHeader:
+    TICKER = 'ticker'
+    DATE = 'date'
+    OPEN = 'open'
+    HIGH = 'high'
+    LOW = 'low'
+    CLOSE = 'close'
+    VOLUME = 'volume'
+    EX_DIVIDEND = 'ex-dividend'
+    SPLIT_RATIO = 'split_ratio'
+    ADJ_OPEN = 'adj_open'
+    ADJ_HIGH = 'adj_high'
+    ADJ_LOW = 'adj_low'
+    ADJ_CLOSE = 'adj_close'
+    ADJ_VOLUME = 'adj_volume'
+
+PARSE_DICT = {
+    WikiHeader.OPEN: lambda x: float(x),
+    WikiHeader.HIGH: lambda x: float(x),
+    WikiHeader.LOW: lambda x: float(x),
+    WikiHeader.CLOSE: lambda x: float(x),
+    WikiHeader.VOLUME: lambda x: float(x),
+    WikiHeader.EX_DIVIDEND: lambda x: float(x),
+    WikiHeader.SPLIT_RATIO: lambda x: float(x),
+    WikiHeader.ADJ_OPEN: lambda x: float(x),
+    WikiHeader.ADJ_HIGH: lambda x: float(x),
+    WikiHeader.ADJ_LOW: lambda x: float(x),
+    WikiHeader.ADJ_CLOSE: lambda x: float(x),
+    WikiHeader.ADJ_VOLUME: lambda x: float(x)
+}
 
 class DataFilter(object):
 
-    def __init__(self, data_dict):
+    def __init__(self, data_dict, thresh_date=None):
+        # Store the data dict
         self.data_dict = data_dict
 
-    def get_start(self, ticker):
-        return self.data_dict[ticker][0][0]
+        # Cull entries before the threshold date
+        if thresh_date is not None:
+            for ticker,entry_dict in sorted(self.data_dict.items()):
+                for curr_date in sorted(entry_dict):
+                    if (curr_date - thresh_date).days < 0:
+                        del self.data_dict[ticker][curr_date]
 
-    def get_data(self, ticker, start_date, 
-        history_period, predict_period, avg_period):
+        # Interpolate data for missing dates
+        for ticker,entry_dict in sorted(self.data_dict.items()):
+            prev_date, prev_entry = None, None
+            for curr_date,curr_entry in sorted(entry_dict.items()):
+                if prev_date is not None:
+                    delta_days = (curr_date - prev_date).days
+                    if delta_days > 1:
+                        for i in range(1, delta_days):
+                            new_entry = {}
+                            new_date = prev_date + datetime.timedelta(i)
+                            for k in prev_entry.keys():
+                                diff = (curr_entry[k] - prev_entry[k])/delta_days
+                                new_entry[k] = prev_entry[k]+diff*i
+                            self.data_dict[ticker][new_date] = new_entry
+                prev_date, prev_entry = curr_date, curr_entry
+
+    def get_start(self, ticker):
+        return sorted(self.data_dict[ticker])[0]
+
+    def k_day_avg(self, ticker, date, field, k):
+        avg_start = date - datetime.timedelta(k//2)
+        tot = 0.0
+        for i in range(k):
+            d = avg_start+datetime.timedelta(i)
+            try:
+                tot += self.data_dict[ticker][d][field]
+            except KeyError:
+                return None
+        else:
+            avg = tot/k
+            return avg
+
+    def get_data(self, ticker, start_date,
+        history_period, predict_period, avg_period,
+        fields=[WikiHeader.OPEN, WikiHeader.CLOSE, WikiHeader.VOLUME],
+        avg_field=WikiHeader.CLOSE):
         """
         Parameters:
             (str) ticker: stock ticker
@@ -72,91 +127,55 @@ class DataFilter(object):
             (int) predict_period: period of gap before prediction
             (int) avg_period: number of days to average over
         Returns:
-            (list[float]) history: historical data
+            (np.array(<float>)) data: historical data
             (int) label: prediction [-1, +1]
             (datetime) end_date: date of last day in predict average
         """
-        raw = self.data_dict[ticker]
-        dt_list, cp_list = zip(*raw)
-        try:
-            idx = dt_list.index(start_date)
-        except ValueError:
-            # Interpolate to get start date 
-            # Find nearest dates before and after
-            new_start = start_date
-            while True:
-                try:
-                    start_idx = dt_list.index(new_start)
-                except ValueError:
-                    new_start -= datetime.timedelta(days=1)
-                else:
-                    _, start_close = raw[start_idx]
-                    break
+        # Get historical data
+        data = np.zeros((len(fields), history_period))
+        for i in range(1, history_period):
+            dt = start_date+datetime.timedelta(i)
+            if dt in self.data_dict[ticker]:
+                for j,f in enumerate(fields):
+                    data[j][i] = self.data_dict[ticker][dt][f]
 
-            new_end = start_date
-            while True:
-                try:
-                    end_idx = dt_list.index(new_end)
-                except ValueError:
-                    new_end += datetime.timedelta(days=1)
-                else:
-                    _, end_close = raw[end_idx]
-                    break
+        # Get k-day averages for prediction
+        history_avg = self.k_day_avg(ticker, 
+            start_date+datetime.timedelta(history_period), 
+            avg_field, avg_period)
+        predict_avg = self.k_day_avg(ticker, 
+            start_date+datetime.timedelta(history_period+predict_period), 
+            avg_field, avg_period)
 
-            delta = (new_end - new_start).days
-            close_delta = (end_close - start_close)/(delta - 1)
-            day_delta = (start_date - new_start).days
-            curr_close = end_close + day_delta*close_delta
-            raw.insert(end_idx, (start_date, curr_close))
-            idx = end_idx
-                
-        prev_date = start_date
-        history = []
-        while(len(history) < history_period+predict_period+avg_period//2):
-            try:
-                curr_date, curr_close = raw[idx]
-            except IndexError:
-                return None
-            delta = (curr_date - prev_date).days
-            # If there was more than one day between elements
-            if delta > 1:
-                # Interpolate data for missing days
-                close_delta = (curr_close - prev_close)/(delta - 1)
-                for i in range(1, delta-1):
-                    history.append(prev_close+i*close_delta) 
-            history.append(curr_close)
-            prev_date, prev_close = curr_date, curr_close
-            idx += 1
-
-        # Get history average
-        start_records = history[history_period-avg_period//2:history_period+avg_period//2+avg_period%2]
-        start_avg = sum(start_records)/len(start_records)
-        # Get predict average
-        end_records = history[predict_period-avg_period//2:predict_period+avg_period//2+avg_period%2]
-        end_avg = sum(end_records)/len(end_records)
-        # Get label
-        label = 1 if start_avg < end_avg else -1
-        # Get end date + 1 (start date of next query)
-        end_date = start_date + datetime.timedelta(days=history_period+predict_period+avg_period//2) 
-
-        return history[:history_period], label, end_date
-
-
-data_dict = collections.defaultdict(list)
-with open(args.input_path, 'r') as csvfile:
-    datareader = csv.reader(csvfile)
-    headers = next(datareader)
-    for row in datareader:
-        dt = datetime.datetime.strptime(row[WikiHeader.DATE.value], '%Y-%m-%d')
-        try:
-            close = float(row[WikiHeader.CLOSE.value])
-        except:
-            pass
+        if history_avg is None or predict_avg is None:
+            return None
         else:
-            data_dict[row[WikiHeader.TICKER.value]].append((dt, close))
+            # Get prediction from k-day averages
+            label = 1 if predict_avg > history_avg else -1
+
+            # Get the datetime of the last day in the predict average
+            end_date = (start_date + 
+                datetime.timedelta(history_period+predict_period+avg_period//2))
+
+            return data, label, end_date
+
+
+data_dict = collections.defaultdict(
+    lambda : collections.defaultdict(dict)
+)
+with open(args.input_path, 'r') as csvfile:
+    dictreader = csv.DictReader(csvfile)
+    for row in dictreader:
+        ticker = row[WikiHeader.TICKER]
+        date = datetime.datetime.strptime(
+            row[WikiHeader.DATE], '%Y-%m-%d')
+        for k,f in PARSE_DICT.items():
+            data_dict[ticker][date][k] = f(row[k])
 
 tickers = data_dict.keys()
-data_filter = DataFilter(data_dict)
+thresh_date = datetime.datetime(2000, 1, 1)
+data_filter = DataFilter(data_dict, thresh_date=thresh_date)
+
 data_list = []
 label_list = []
 with progressbar.ProgressBar(max_value=len(tickers)) as bar:
